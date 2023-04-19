@@ -1,14 +1,17 @@
 import * as functions from 'firebase-functions'
 import * as admin from 'firebase-admin'
+import * as cors from 'cors'
+import { config } from 'firebase-functions'
 import {
   Firestore,
   DocumentSnapshot,
   QuerySnapshot,
   CollectionReference,
-  AggregateQuerySnapshot,
-  AggregateField,
   DocumentReference,
+  FieldValue,
 } from '@google-cloud/firestore'
+
+import { Request, Response } from 'express'
 
 admin.initializeApp()
 
@@ -32,23 +35,39 @@ type Ranking = Rating[]
 
 const db: Firestore = admin.firestore()
 
-export const aggregateRanking = functions.https.onCall(async () => {
-  try {
-    const charactersSnapshot = await db.collection('develop').doc('ZVP3ieLUu9RTLQN8vkIe').get()
-    if (charactersSnapshot.exists) {
-      const characters: Character[] = charactersSnapshot.data()?.characters
-      const dictionary: Record<string, string> = createDictionaryFromCharacters(characters)
-      const count: number = await getRatingsCount()
-      const ranking: Ranking = await aggregateRatings(count, dictionary)
-      const rankingRef: DocumentReference = db.collection('ranking').doc()
-      await rankingRef.set({ ranking })
-      return { success: true }
-    } else {
-      return { message: 'Document not found.' }
+export const aggregateRanking = functions.https.onRequest(async (req: Request, res: Response) => {
+  const corsHandler = cors({ origin: true })
+
+  corsHandler(req, res, async () => {
+    if (req.method !== 'POST') {
+      res.status(405).json({ message: 'Method not allowed.' })
+      return
     }
-  } catch (error: unknown) {
-    throw new functions.https.HttpsError('unknown', '')
-  }
+
+    const apiKey = req.header('x-api-key')
+    const expectedApiKey = config().api.key
+    if (!apiKey || apiKey !== expectedApiKey) {
+      res.status(403).json({ message: 'Forbidden.' })
+      return
+    }
+
+    try {
+      const charactersSnapshot = await db.collection('develop').doc('ZVP3ieLUu9RTLQN8vkIe').get()
+      if (charactersSnapshot.exists) {
+        const characters: Character[] = charactersSnapshot.data()?.characters
+        const dictionary: Record<string, string> = createDictionaryFromCharacters(characters)
+        const count = 89
+        const ranking: Ranking = await aggregateRatings(count, dictionary)
+        const rankingRef: DocumentReference = db.collection('ranking').doc()
+        await rankingRef.set({ ranking, createdAt: FieldValue.serverTimestamp() })
+        res.status(200).json({ success: true })
+      } else {
+        res.status(404).json({ message: 'Document not found.' })
+      }
+    } catch (error: unknown) {
+      res.status(500).json({ message: 'An error occurred.' })
+    }
+  })
 })
 
 export const createDictionaryFromCharacters = (characters: Character[]): Record<string, string> => {
@@ -56,14 +75,6 @@ export const createDictionaryFromCharacters = (characters: Character[]): Record<
     dictionary[character.id] = character.name
     return dictionary
   }, {} as Record<string, string>)
-}
-
-export const getRatingsCount = async (): Promise<number> => {
-  const ratingsRef: CollectionReference = db.collection('ratings')
-  const snapshot: AggregateQuerySnapshot<{ count: AggregateField<number> }> = await ratingsRef
-    .count()
-    .get()
-  return snapshot.data().count
 }
 
 export const aggregateRatings = async (
@@ -89,5 +100,5 @@ export const aggregateRatings = async (
     result.push({ id, name, rating })
   }
 
-  return result.sort((a, b) => a.rating - b.rating)
+  return result.sort((a, b) => b.rating - a.rating)
 }
